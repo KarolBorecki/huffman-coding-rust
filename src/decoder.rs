@@ -190,7 +190,7 @@ fn decode_with_tree(encoded: &[u8]) -> Vec<u8> {
     // start after separator
     let mut data_bits = bits[sep_pos + 16..].to_vec();
     let mut result = Vec::new();
-    let mut node =  tree.as_ref();
+    let mut node = &tree;
 
     for bit in data_bits {
         match node {
@@ -216,7 +216,7 @@ fn decode_with_tree(encoded: &[u8]) -> Vec<u8> {
 
 fn main() {
     // --- ENCODE ---
-    let data = fs::read("data/img/boat.pgm").expect("cannot read input.txt");
+    let data = fs::read("input.txt").expect("cannot read input.txt");
 
     let mut freq = HashMap::new();
     for &b in &data {
@@ -234,7 +234,7 @@ fn main() {
     // --- DECODE ---
     let encoded_data = fs::read("output.huff").expect("read failed");
     let decoded = decode_with_tree(&encoded_data);
-    let mut f = File::create("decoded.pgm").expect("create failed");
+    let mut f = File::create("decoded.txt").expect("create failed");
     f.write_all(&decoded).unwrap();
     println!("✅ Decoded to decoded.txt ({} bytes)", decoded.len());
 }

@@ -1,4 +1,5 @@
 use std::collections::{BinaryHeap, HashMap};
+use std::env;
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::Write;
@@ -16,7 +17,28 @@ impl Node {
             Node::Internal { freq, .. } => *freq,
         }
     }
+
+    fn character(&self) -> Option<u8> {
+        match self {
+            Node::Leaf { byte, .. } => Some(*byte),
+            Node::Internal { .. } => None,
+        }
+    }
 }
+
+impl Ord for Node {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.freq().cmp(&self.freq()) // min-heap
+    }
+}
+
+impl PartialOrd for Node {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+type HuffmanTree = Node;
 
 #[derive(Eq, PartialEq)]
 struct HeapNode {
@@ -36,9 +58,8 @@ impl PartialOrd for HeapNode {
     }
 }
 
-// ---------- BUILD TREE AND CODES ----------
 
-fn build_huffman_tree(frequencies: &HashMap<u8, u64>) -> Option<Box<Node>> {
+fn build_huffman_tree(frequencies: &HashMap<u8, u64>) -> Option<Box<HuffmanTree>> {
     let mut heap = BinaryHeap::new();
     for (&byte, &freq) in frequencies {
         heap.push(HeapNode {
@@ -76,32 +97,37 @@ fn build_code_table(node: &Node, prefix: String, table: &mut HashMap<u8, String>
     }
 }
 
-// ---------- BIT SERIALIZATION ----------
+fn encode_frequencies(freq: &HashMap<u8, u64>) -> Vec<u8> {
+    let mut bytes = Vec::new();
 
-fn serialize_tree(node: &Node, bits: &mut Vec<u8>) {
-    match node {
-        Node::Leaf { byte, .. } => {
-            bits.push(1);
-            for i in (0..8).rev() {
-                bits.push((byte >> i) & 1);
-            }
-        }
-        Node::Internal { left, right, .. } => {
-            serialize_tree(left, bits);
-            serialize_tree(right, bits);
-            bits.push(0);
-        }
+    let mut heap = BinaryHeap::new();
+    for (&byte, &freq) in freq {
+        heap.push(
+            Node::Leaf { byte, freq }
+        );
     }
+    let mut count = 0;
+
+    while let curr_most_freq_node = heap.pop() {
+        match curr_most_freq_node {
+            Some(Node::Leaf { byte, freq }) => {
+                bytes.extend_from_slice(&byte.to_be_bytes());
+                count += 1;
+            }
+            Some(Node::Internal { .. }) => {
+                // Should not happen in frequency encoding
+            }
+            None => break,
+        }
+    };
+    bytes.insert(0, count as u8); // Prepend the count of unique bytes
+
+    bytes
 }
 
-fn encode_with_tree(data: &[u8], code_table: &HashMap<u8, String>, tree: &Node) -> Vec<u8> {
+fn encode_data(data: &[u8], code_table: &HashMap<u8, String>) -> Vec<u8> {
     let mut bits = Vec::new();
 
-    // 1️⃣ tree
-    serialize_tree(tree, &mut bits);
-    // 2️⃣ separator
-    bits.extend(vec![0; 16]);
-    // 3️⃣ data bits
     for &b in data {
         if let Some(code) = code_table.get(&b) {
             for c in code.chars() {
@@ -109,132 +135,143 @@ fn encode_with_tree(data: &[u8], code_table: &HashMap<u8, String>, tree: &Node) 
             }
         }
     }
-    // 4️⃣ pad
     while bits.len() % 8 != 0 {
         bits.push(0);
     }
-    // 5️⃣ to bytes
     let mut bytes = Vec::new();
+    let mut byte_index = 0;
     for chunk in bits.chunks(8) {
         let mut byte = 0u8;
         for &bit in chunk {
             byte = (byte << 1) | bit;
         }
+        let chunk_str: String = chunk.iter().map(|&b| (b + b'0') as char).collect();
+        // println!(
+        //     "Byte #{}: Bits: {:<8} -> Decimal: {:<3} | Binary: {:#010b}",
+        //     byte_index,
+        //     chunk_str,
+        //     byte,
+        //     byte
+        // );
         bytes.push(byte);
+        byte_index += 1;
     }
     bytes
 }
 
-// ---------- DECODER ----------
+fn write_frequencies_and_data_to_file(
+    filepath: &str,
+    freq_encoded: &[u8],
+    data_encoded: &[u8],
+) -> std::io::Result<()> {
+    let mut file = File::create(filepath)?;
+    file.write_all(freq_encoded)?;
+    file.write_all(data_encoded)?;
+    Ok(())
+}
 
-/// Convert bytes to a vector of bits (u8 0/1)
-fn bytes_to_bits(data: &[u8]) -> Vec<u8> {
-    let mut bits = Vec::with_capacity(data.len() * 8);
-    for &byte in data {
+fn read_frequencies_and_data_from_file(
+    filepath: &str,
+) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
+    let content = fs::read(filepath)?;
+    let freq_size = content[0] as usize + 1;
+    let freq_encoded = content[..freq_size].to_vec();
+    let data_encoded = content[freq_size..].to_vec();
+    Ok((freq_encoded, data_encoded))
+}
+
+fn decode_frequencies(encoded: &[u8]) -> HashMap<u8, u64> {
+    let mut freq = HashMap::new();
+    let count = encoded[0] as usize;
+    for i in 0..count {
+        let byte = encoded[i + 1];
+        freq.insert(byte, (i + 1) as u64);
+    }
+    freq
+}
+
+fn decode_data(encoded: &[u8], code_table: &HashMap<u8, String>) -> Vec<u8> {
+    let mut bits = Vec::new();
+    for &byte in encoded {
         for i in (0..8).rev() {
             bits.push((byte >> i) & 1);
         }
     }
-    bits
-}
 
-/// Deserialize the tree from the bitstream (same structure as serialize_tree)
-fn deserialize_tree(bits: &mut Vec<u8>, index: &mut usize) -> Option<Box<Node>> {
-    if *index >= bits.len() {
-        return None;
-    }
-    let flag = bits[*index];
-    *index += 1;
-
-    if flag == 1 {
-        // leaf
-        if *index + 8 > bits.len() {
-            return None;
-        }
-        let mut byte = 0u8;
-        for _ in 0..8 {
-            byte = (byte << 1) | bits[*index];
-            *index += 1;
-        }
-        Some(Box::new(Node::Leaf { byte, freq: 0 }))
-    } else {
-        // internal node
-        let left = deserialize_tree(bits, index)?;
-        let right = deserialize_tree(bits, index)?;
-        Some(Box::new(Node::Internal {
-            freq: 0,
-            left,
-            right,
-        }))
-    }
-}
-
-fn decode_with_tree(encoded: &[u8]) -> Vec<u8> {
-    let bits = bytes_to_bits(encoded);
-
-    // find the 16-bit separator
-    let mut sep_pos = None;
-    for i in 0..bits.len() - 15 {
-        if bits[i..i + 16].iter().all(|&b| b == 0) {
-            sep_pos = Some(i);
-            break;
-        }
-    }
-    let sep_pos = sep_pos.expect("separator not found");
-
-    let mut idx = 0;
-    let mut tree_bits = bits[..sep_pos].to_vec();
-    let mut t_idx = 0;
-    let tree = deserialize_tree(&mut tree_bits, &mut t_idx).expect("tree parse error");
-
-    // start after separator
-    let mut data_bits = bits[sep_pos + 16..].to_vec();
     let mut result = Vec::new();
-    let mut node =  tree.as_ref();
+    let mut current_code = String::new();
+    let reverse_table: HashMap<String, u8> = code_table.iter().map(|(&b, c)| (c.clone(), b)).collect();
 
-    for bit in data_bits {
-        match node {
-            Node::Leaf { byte, .. } => {
-                result.push(*byte);
-                node = &tree; // restart
-            }
-            Node::Internal { left, right, .. } => {
-                node = if bit == 0 { left } else { right };
-            }
+    for &bit in &bits {
+        current_code.push(if bit == 1 { '1' } else { '0' });
+        if let Some(&byte) = reverse_table.get(&current_code) {
+            result.push(byte);
+            current_code.clear();
         }
     }
-
-    // last byte check
-    if let Node::Leaf { byte, .. } = node {
-        result.push(*byte);
-    }
-
     result
 }
 
-// ---------- MAIN ----------
 
 fn main() {
-    // --- ENCODE ---
-    let data = fs::read("data/img/boat.pgm").expect("cannot read input.txt");
+    let args: Vec<String> = env::args().collect();
 
+    if args.len() < 2 {
+        eprintln!("Usage: {} <input_file> [output_file]", args[0]);
+        eprintln!("  <input_file>:  Path to the file to encode.");
+        eprintln!("  [output_file]: Optional. Path to write the encoded output.");
+        eprintln!("                 Defaults to 'output.huff'.");
+        std::process::exit(1);
+    }
+
+    let input_filepath = &args[1];
+    let output_filepath = args.get(2).map_or("output.huff", |s| s.as_str());
+
+    // ENCODER
+    let data = fs::read(input_filepath).expect("cannot read input.txt");
     let mut freq = HashMap::new();
     for &b in &data {
         *freq.entry(b).or_insert(0) += 1;
     }
-
     let tree = build_huffman_tree(&freq).unwrap();
     let mut table = HashMap::new();
     build_code_table(&tree, String::new(), &mut table);
 
-    let encoded = encode_with_tree(&data, &table, &tree);
-    fs::write("output.huff", &encoded).expect("write failed");
-    println!("✅ Encoded to output.huff ({} bytes)", encoded.len());
+    for (byte, code) in &table {
+        println!("{:?}: {}", *byte as char, code);
+    }
 
-    // --- DECODE ---
-    let encoded_data = fs::read("output.huff").expect("read failed");
-    let decoded = decode_with_tree(&encoded_data);
-    let mut f = File::create("decoded.pgm").expect("create failed");
-    f.write_all(&decoded).unwrap();
-    println!("✅ Decoded to decoded.txt ({} bytes)", decoded.len());
+    let encoded_freq = encode_frequencies(&freq);
+    let encoded_data = encode_data(&data, &table);
+    write_frequencies_and_data_to_file(output_filepath, &encoded_freq, &encoded_data)
+        .expect("failed to write encoded file");
+    println!("✅ Encoded to {} (down to {} bytes from {} bytes -{} %)", output_filepath, encoded_data.len(), data.len(), (encoded_data.len() as f64)/(data.len() as f64)*100.0);
+
+
+    // DECODER 
+    let (encoded_freq, encoded_data) = read_frequencies_and_data_from_file(output_filepath).expect("failed to read encoded file");
+
+    println!("READ Encoded Frequencies:");
+    for byte in &encoded_freq {
+        println!("{:08b} which is: {} ({})", byte, byte, *byte as char);
+    }
+    println!();
+
+    println!("READ Encoded Data:");
+    for byte in &encoded_data {
+        println!("{:08b} which is: {} ({})", byte, byte, *byte as char);
+    }
+    let decoded_freq = decode_frequencies(&encoded_freq);
+    for (byte, frequency) in &decoded_freq {
+        println!("Byte: {} ({}) - Frequency: {}", byte, *byte as char, frequency);
+    }
+    let decoded_tree = build_huffman_tree(&decoded_freq).unwrap();
+    let mut decoded_table = HashMap::new();
+    build_code_table(&decoded_tree, String::new(), &mut decoded_table);
+    for (byte, code) in &decoded_table {
+        println!("Decoded Table - {:?}: {}", *byte as char, code);
+    }
+    let decoded_data = decode_data(&encoded_data, &decoded_table);
+    assert_eq!(data, decoded_data);
+    println!("✅ Decoding successful, data matches original.");
 }

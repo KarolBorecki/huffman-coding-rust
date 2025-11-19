@@ -75,6 +75,18 @@ impl PartialOrd for HeapNode {
     }
 }
 
+fn entropy_from_freq(freq: &HashMap<u8, u64>) -> f64 {
+    let total: u64 = freq.values().sum();
+    let total_f = total as f64;
+
+    freq.values()
+        .map(|&count| {
+            let p = count as f64 / total_f;
+            -p * p.log2()
+        })
+        .sum()
+}
+
 fn build_huffman_tree(frequencies: &HashMap<u8, u64>) -> Option<Box<HuffmanTree>> {
     let mut freq_vec: Vec<_> = frequencies.iter().collect();
     freq_vec.sort_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)));
@@ -164,7 +176,6 @@ fn encode_data(data: &[u8], code_table: &HashMap<u8, String>) -> Vec<u8> {
         }
 
         bytes.push(byte);
-        byte_index += 1;
     }
     bytes
 }
@@ -250,8 +261,10 @@ fn main() {
     write_frequencies_and_data_to_file(output_filepath, &encoded_freq, &encoded_data)
         .expect("failed to write encoded file");
     println!(
-        "✅ Encoded to {} (down to {} bytes from {} bytes -{} %)\n\n",
+        "✅ Encoded to {} {} of entrophy {:.2} (down to {} bytes from {} bytes -{:.2} %)\n\n",
         output_filepath,
+        input_filepath,
+        entropy_from_freq(&freq),
         encoded_data.len(),
         data.len(),
         (1.0 - (encoded_data.len() as f64) / (data.len() as f64)) * 100.0

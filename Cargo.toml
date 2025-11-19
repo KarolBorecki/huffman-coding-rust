@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[[bin]]
+name = "encode"
+path = "src/encoder.rs"
+
+[[bin]]
+name = "decode"
+path = "src/decoder.rs"

@@ -1,13 +1,20 @@
+use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::env;
-use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::Write;
 
 #[derive(Debug, Eq, PartialEq)]
 enum Node {
-    Leaf { byte: u8, freq: u64 },
-    Internal { freq: u64, left: Box<Node>, right: Box<Node> },
+    Leaf {
+        byte: u8,
+        freq: u64,
+    },
+    Internal {
+        freq: u64,
+        left: Box<Node>,
+        right: Box<Node>,
+    },
 }
 
 impl Node {
@@ -28,7 +35,17 @@ impl Node {
 
 impl Ord for Node {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.freq().cmp(&self.freq()) // min-heap
+        let freq_cmp = other.freq().cmp(&self.freq());
+        if freq_cmp != Ordering::Equal {
+            return freq_cmp;
+        }
+
+        match (self, other) {
+            (Node::Leaf { byte: a, .. }, Node::Leaf { byte: b, .. }) => a.cmp(b),
+            (Node::Leaf { .. }, Node::Internal { .. }) => Ordering::Less,
+            (Node::Internal { .. }, Node::Leaf { .. }) => Ordering::Greater,
+            (Node::Internal { .. }, Node::Internal { .. }) => Ordering::Equal,
+        }
     }
 }
 
@@ -48,7 +65,7 @@ struct HeapNode {
 
 impl Ord for HeapNode {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.freq.cmp(&self.freq) // min-heap
+        other.freq.cmp(&self.freq)
     }
 }
 
@@ -58,13 +75,16 @@ impl PartialOrd for HeapNode {
     }
 }
 
-
 fn build_huffman_tree(frequencies: &HashMap<u8, u64>) -> Option<Box<HuffmanTree>> {
+    let mut freq_vec: Vec<_> = frequencies.iter().collect();
+    freq_vec.sort_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)));
+
     let mut heap = BinaryHeap::new();
-    for (&byte, &freq) in frequencies {
+    for (i, (byte, _freq)) in freq_vec.iter().enumerate() {
+        let freq = (i + 1) as u64;
         heap.push(HeapNode {
             freq,
-            node: Box::new(Node::Leaf { byte, freq }),
+            node: Box::new(Node::Leaf { byte: **byte, freq }),
         });
     }
 
@@ -97,14 +117,12 @@ fn build_code_table(node: &Node, prefix: String, table: &mut HashMap<u8, String>
     }
 }
 
-fn encode_frequencies(freq: &HashMap<u8, u64>) -> Vec<u8> {
+fn encode_frequencies(frequencies: &HashMap<u8, u64>) -> Vec<u8> {
     let mut bytes = Vec::new();
 
     let mut heap = BinaryHeap::new();
-    for (&byte, &freq) in freq {
-        heap.push(
-            Node::Leaf { byte, freq }
-        );
+    for (&byte, &freq) in frequencies {
+        heap.push(Node::Leaf { byte, freq });
     }
     let mut count = 0;
 
@@ -119,8 +137,8 @@ fn encode_frequencies(freq: &HashMap<u8, u64>) -> Vec<u8> {
             }
             None => break,
         }
-    };
-    bytes.insert(0, count as u8); // Prepend the count of unique bytes
+    }
+    bytes.insert(0, count as u8);
 
     bytes
 }
@@ -139,20 +157,12 @@ fn encode_data(data: &[u8], code_table: &HashMap<u8, String>) -> Vec<u8> {
         bits.push(0);
     }
     let mut bytes = Vec::new();
-    let mut byte_index = 0;
     for chunk in bits.chunks(8) {
         let mut byte = 0u8;
         for &bit in chunk {
             byte = (byte << 1) | bit;
         }
-        let chunk_str: String = chunk.iter().map(|&b| (b + b'0') as char).collect();
-        // println!(
-        //     "Byte #{}: Bits: {:<8} -> Decimal: {:<3} | Binary: {:#010b}",
-        //     byte_index,
-        //     chunk_str,
-        //     byte,
-        //     byte
-        // );
+
         bytes.push(byte);
         byte_index += 1;
     }
@@ -170,9 +180,7 @@ fn write_frequencies_and_data_to_file(
     Ok(())
 }
 
-fn read_frequencies_and_data_from_file(
-    filepath: &str,
-) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
+fn read_frequencies_and_data_from_file(filepath: &str) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
     let content = fs::read(filepath)?;
     let freq_size = content[0] as usize + 1;
     let freq_encoded = content[..freq_size].to_vec();
@@ -200,7 +208,8 @@ fn decode_data(encoded: &[u8], code_table: &HashMap<u8, String>) -> Vec<u8> {
 
     let mut result = Vec::new();
     let mut current_code = String::new();
-    let reverse_table: HashMap<String, u8> = code_table.iter().map(|(&b, c)| (c.clone(), b)).collect();
+    let reverse_table: HashMap<String, u8> =
+        code_table.iter().map(|(&b, c)| (c.clone(), b)).collect();
 
     for &bit in &bits {
         current_code.push(if bit == 1 { '1' } else { '0' });
@@ -211,7 +220,6 @@ fn decode_data(encoded: &[u8], code_table: &HashMap<u8, String>) -> Vec<u8> {
     }
     result
 }
-
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -233,45 +241,40 @@ fn main() {
     for &b in &data {
         *freq.entry(b).or_insert(0) += 1;
     }
-    let tree = build_huffman_tree(&freq).unwrap();
+    let tree = build_huffman_tree(&freq).expect("could not build huffman tree");
     let mut table = HashMap::new();
     build_code_table(&tree, String::new(), &mut table);
-
-    for (byte, code) in &table {
-        println!("{:?}: {}", *byte as char, code);
-    }
 
     let encoded_freq = encode_frequencies(&freq);
     let encoded_data = encode_data(&data, &table);
     write_frequencies_and_data_to_file(output_filepath, &encoded_freq, &encoded_data)
         .expect("failed to write encoded file");
-    println!("✅ Encoded to {} (down to {} bytes from {} bytes -{} %)", output_filepath, encoded_data.len(), data.len(), (encoded_data.len() as f64)/(data.len() as f64)*100.0);
+    println!(
+        "✅ Encoded to {} (down to {} bytes from {} bytes -{} %)\n\n",
+        output_filepath,
+        encoded_data.len(),
+        data.len(),
+        (1.0 - (encoded_data.len() as f64) / (data.len() as f64)) * 100.0
+    );
 
+    // DECODER
+    let (encoded_freq, encoded_data) =
+        read_frequencies_and_data_from_file(output_filepath).expect("failed to read encoded file");
 
-    // DECODER 
-    let (encoded_freq, encoded_data) = read_frequencies_and_data_from_file(output_filepath).expect("failed to read encoded file");
-
-    println!("READ Encoded Frequencies:");
-    for byte in &encoded_freq {
-        println!("{:08b} which is: {} ({})", byte, byte, *byte as char);
-    }
-    println!();
-
-    println!("READ Encoded Data:");
-    for byte in &encoded_data {
-        println!("{:08b} which is: {} ({})", byte, byte, *byte as char);
-    }
     let decoded_freq = decode_frequencies(&encoded_freq);
-    for (byte, frequency) in &decoded_freq {
-        println!("Byte: {} ({}) - Frequency: {}", byte, *byte as char, frequency);
-    }
+
     let decoded_tree = build_huffman_tree(&decoded_freq).unwrap();
+
     let mut decoded_table = HashMap::new();
     build_code_table(&decoded_tree, String::new(), &mut decoded_table);
-    for (byte, code) in &decoded_table {
-        println!("Decoded Table - {:?}: {}", *byte as char, code);
-    }
+
     let decoded_data = decode_data(&encoded_data, &decoded_table);
     assert_eq!(data, decoded_data);
+    let decoded_output_filepath = String::from(format!("{}.decoded", input_filepath));
+    let mut decoded_output_file =
+        File::create(decoded_output_filepath).expect("cannot create decoded_output file");
+    decoded_output_file
+        .write_all(&decoded_data)
+        .expect("could not write decoded data");
     println!("✅ Decoding successful, data matches original.");
 }

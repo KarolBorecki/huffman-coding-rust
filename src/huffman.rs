@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
+pub type CodeTable = HashMap<u8, String>;
+pub type FreqTable = HashMap<u8, u64>;
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum Node {
     Leaf {
@@ -66,7 +69,7 @@ impl PartialOrd for HeapNode {
 }
 
 
-pub fn entropy_from_freq(freq: &HashMap<u8, u64>) -> f64 { #![allow(dead_code)]
+pub fn entropy_from_freq(freq: &FreqTable) -> f64 { #![allow(dead_code)]
     let total: u64 = freq.values().sum();
     let total_f = total as f64;
 
@@ -78,7 +81,7 @@ pub fn entropy_from_freq(freq: &HashMap<u8, u64>) -> f64 { #![allow(dead_code)]
         .sum()
 }
 
-pub fn build_huffman_tree(frequencies: &HashMap<u8, u64>) -> Option<Box<HuffmanTree>> {
+pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
     let mut freq_vec: Vec<_> = frequencies.iter().collect();
     freq_vec.sort_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)));
 
@@ -108,7 +111,7 @@ pub fn build_huffman_tree(frequencies: &HashMap<u8, u64>) -> Option<Box<HuffmanT
     heap.pop().map(|n| n.node)
 }
 
-pub fn build_code_table(node: &Node, prefix: String, table: &mut HashMap<u8, String>) {
+pub fn build_code_table(node: &Node, prefix: String, table: &mut CodeTable) {
     match node {
         Node::Leaf { byte, .. } => {
             table.insert(*byte, prefix);

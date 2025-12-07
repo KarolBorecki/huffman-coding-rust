@@ -1,6 +1,8 @@
 mod huffman;
 
-use crate::huffman::{build_code_table, build_huffman_tree, CodeTable, entropy_from_freq, FreqTable};
+use crate::huffman::{
+    CodeTable, FreqTable, build_code_table, build_huffman_tree, entropy_from_freq,
+};
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
@@ -71,7 +73,7 @@ fn main() {
 
     let decoded_freq = decode_frequencies(&encoded_freq);
 
-    let decoded_tree = build_huffman_tree(&decoded_freq).unwrap();
+    let decoded_tree = build_huffman_tree(&decoded_freq).expect("could not build huffman tree");
 
     let mut decoded_table = HashMap::new();
     build_code_table(&decoded_tree, String::new(), &mut decoded_table);
@@ -82,18 +84,14 @@ fn main() {
     decoded_output_file
         .write_all(&decoded_data)
         .expect("could not write decoded data");
-        let input_size = fs::metadata(input_filepath)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let input_size = fs::metadata(input_filepath).map(|m| m.len()).unwrap_or(0);
 
-    let output_size = fs::metadata(output_filepath)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let output_size = fs::metadata(output_filepath).map(|m| m.len()).unwrap_or(0);
 
     let file_entropy = entropy_from_freq(&decoded_freq);
 
     println!(
-        "✅ decoding successful.\n\
+        "\r\n✅ decoding successful.\n\
          📂 input file:        {} ({} bytes)\n\
          💾 output file:       {} ({} bytes)\n\
          ℹ️ entropy:           {:.2} bits/symbol\n\

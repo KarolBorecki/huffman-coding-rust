@@ -1,11 +1,13 @@
 mod huffman;
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::BinaryHeap;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 
-use crate::huffman::{build_code_table, build_huffman_tree, CodeTable, entropy_from_freq, FreqTable, Node};
+use crate::huffman::{
+    CodeTable, FreqTable, Node, build_code_table, build_huffman_tree, entropy_from_freq,
+};
 
 fn encode_frequencies(frequencies: &FreqTable) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -17,7 +19,7 @@ fn encode_frequencies(frequencies: &FreqTable) -> Vec<u8> {
     let mut count = 0u64;
 
     loop {
-        let curr_most_freq_node = heap.pop() ;
+        let curr_most_freq_node = heap.pop();
         match curr_most_freq_node {
             Some(Node::Leaf { byte, freq: _ }) => {
                 bytes.extend_from_slice(&byte.to_be_bytes());
@@ -90,7 +92,7 @@ fn main() {
         *freq.entry(b).or_insert(0) += 1;
     }
     let tree = build_huffman_tree(&freq).expect("could not build huffman tree");
-    let mut table = CodeTable   ::new();
+    let mut table = CodeTable::new();
     build_code_table(&tree, String::new(), &mut table);
 
     let encoded_freq = encode_frequencies(&freq);
@@ -103,16 +105,11 @@ fn main() {
     let compression_ratio = 100.0 * (1.0 - (output_size as f64) / (input_size as f64));
 
     println!(
-        "✅ encoding successful.\n\
+        "\r\n✅ encoding successful.\n\
          📂 input file:  {} ({} bytes)\n\
          💾 output file: {} ({} bytes)\n\
          ℹ️ entropy:     {:.2} bits/symbol\n\
          🗜️ compressed:  {:.2}%",
-        input_filepath,
-        input_size,
-        output_filepath,
-        output_size,
-        file_entropy,
-        compression_ratio
+        input_filepath, input_size, output_filepath, output_size, file_entropy, compression_ratio
     );
 }

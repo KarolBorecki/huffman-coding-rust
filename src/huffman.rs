@@ -58,6 +58,7 @@ pub struct HeapNode {
 
 impl Ord for HeapNode {
     fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse ordering for Min-Heap behavior in BinaryHeap (which is max-heap by default)
         other.freq.cmp(&self.freq)
     }
 }
@@ -68,35 +69,51 @@ impl PartialOrd for HeapNode {
     }
 }
 
-
-pub fn entropy_from_freq(freq: &FreqTable) -> f64 { #![allow(dead_code)]
+pub fn entropy_from_freq(freq: &FreqTable) -> f64 {
+    #![allow(dead_code)]
     let total: u64 = freq.values().sum();
     let total_f = total as f64;
 
-    freq.values()
+    let entropy: f64 = freq
+        .values()
         .map(|&count| {
             let p = count as f64 / total_f;
             -p * p.log2()
         })
-        .sum()
+        .sum();
+
+    eprintln!(
+        "[DEBUG] Calculated entropy: {:.4} bits/symbol (Total samples: {})",
+        entropy, total
+    );
+    entropy
 }
 
 pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
+    eprintln!(
+        "[DEBUG] Building Huffman Tree from {} unique symbols",
+        frequencies.len()
+    );
+
     let mut freq_vec: Vec<_> = frequencies.iter().collect();
     freq_vec.sort_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)));
 
     let mut heap = BinaryHeap::new();
+
     for (i, (byte, _freq)) in freq_vec.iter().enumerate() {
         let freq = (i + 1) as u64;
+
         heap.push(HeapNode {
             freq,
             node: Box::new(Node::Leaf { byte: **byte, freq }),
         });
     }
+    eprintln!("[DEBUG] Initial heap size: {}", heap.len());
 
     while heap.len() > 1 {
         let left = heap.pop().unwrap();
         let right = heap.pop().unwrap();
+
         let freq = left.freq + right.freq;
         let new_node = Node::Internal {
             freq,
@@ -108,12 +125,18 @@ pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
             node: Box::new(new_node),
         });
     }
+
+    eprintln!("[DEBUG] Tree construction complete.");
     heap.pop().map(|n| n.node)
 }
 
 pub fn build_code_table(node: &Node, prefix: String, table: &mut CodeTable) {
     match node {
         Node::Leaf { byte, .. } => {
+            eprintln!(
+                "[DEBUG] Assigning code to byte {:#04x} ('{}') : '{}'",
+                byte, (*byte) as char, prefix
+            );
             table.insert(*byte, prefix);
         }
         Node::Internal { left, right, .. } => {

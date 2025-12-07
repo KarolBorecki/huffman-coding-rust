@@ -1,3 +1,4 @@
+use log::{debug, trace};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
@@ -82,20 +83,21 @@ pub fn entropy_from_freq(freq: &FreqTable) -> f64 {
         })
         .sum();
 
-    eprintln!(
-        "[DEBUG] Calculated entropy: {:.4} bits/symbol (Total samples: {})",
+    debug!(
+        "Calculated entropy: {:.4} bits/symbol (Total samples: {})",
         entropy, total
     );
     entropy
 }
 
 pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
-    eprintln!(
-        "[DEBUG] Building Huffman Tree from {} unique symbols",
+    debug!(
+        "Building Huffman Tree from {} unique symbols",
         frequencies.len()
     );
 
     let mut freq_vec: Vec<_> = frequencies.iter().collect();
+
     freq_vec.sort_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)));
 
     let mut heap = BinaryHeap::new();
@@ -108,7 +110,7 @@ pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
             node: Box::new(Node::Leaf { byte: **byte, freq }),
         });
     }
-    eprintln!("[DEBUG] Initial heap size: {}", heap.len());
+    trace!("Initial heap size: {}", heap.len());
 
     while heap.len() > 1 {
         let left = heap.pop().unwrap();
@@ -126,16 +128,18 @@ pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
         });
     }
 
-    eprintln!("[DEBUG] Tree construction complete.");
+    debug!("Tree construction complete.");
     heap.pop().map(|n| n.node)
 }
 
 pub fn build_code_table(node: &Node, prefix: String, table: &mut CodeTable) {
     match node {
         Node::Leaf { byte, .. } => {
-            eprintln!(
-                "[DEBUG] Assigning code to byte {:#04x} ('{}') : '{}'",
-                byte, (*byte) as char, prefix
+            trace!(
+                "Assigning code to byte {:#04x} ('{}') : '{}'",
+                byte,
+                (*byte) as char,
+                prefix
             );
             table.insert(*byte, prefix);
         }

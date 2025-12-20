@@ -1,4 +1,4 @@
-use log::{debug, trace};
+use log::debug;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 

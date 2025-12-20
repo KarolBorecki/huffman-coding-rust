@@ -34,38 +34,46 @@ fn encode_frequencies(frequencies: &FreqTable, block_size: u8, original_len: u64
     bytes
 }
 
-fn encode_data(data_blocks: &[Vec<u8>], code_table: &CodeTable) -> Vec<u8> {
-    debug!("Starting data encoding...");
-    let mut bits = Vec::with_capacity(data_blocks.len() * 8);
+fn encode_data(raw_data: &[u8], code_table: &CodeTable, order: usize) -> Vec<u8> {
+    debug!("Starting context-aware data encoding...");
+    let mut result = Vec::new();
+    let mut current_byte = 0u8;
+    let mut bit_count = 0;
 
-    for block in data_blocks {
-        if let Some(code) = code_table.get(block) {
-            for c in code.chars() {
-                bits.push(if c == '1' { 1 } else { 0 });
+    let mut context = vec![0u8; order];
+
+    for &byte in raw_data {
+        let mut symbol = context.clone();
+        symbol.push(byte);
+
+        if let Some(code) = code_table.get(&symbol) {
+            for bit_char in code.chars() {
+                let bit = if bit_char == '1' { 1 } else { 0 };
+
+                current_byte = (current_byte << 1) | bit;
+                bit_count += 1;
+
+                if bit_count == 8 {
+                    result.push(current_byte);
+                    current_byte = 0;
+                    bit_count = 0;
+                }
             }
-        } else {
-            error!(
-                "CRITICAL: Symbol {:?} found in data but not in code table!",
-                block
-            );
+        }
+
+        if order > 0 {
+            context.remove(0);
+            context.push(byte);
         }
     }
 
-    while bits.len() % 8 != 0 {
-        bits.push(0);
+    if bit_count > 0 {
+        current_byte <<= 8 - bit_count;
+        result.push(current_byte);
     }
 
-    let mut bytes = Vec::with_capacity(bits.len() / 8);
-    for chunk in bits.chunks(8) {
-        let mut byte = 0u8;
-        for &bit in chunk {
-            byte = (byte << 1) | bit;
-        }
-        bytes.push(byte);
-    }
-    bytes
+    result
 }
-
 fn main() {
     env_logger::init();
 
@@ -82,7 +90,7 @@ fn main() {
     for arg in &args[2..] {
         if arg.starts_with("--order=") {
             if let Ok(n) = arg.trim_start_matches("--order=").parse::<usize>() {
-                order = if n <= 2 { n } else { 2 };
+                order = n;
             }
         } else {
             output_filepath = arg;
@@ -90,34 +98,35 @@ fn main() {
     }
 
     let block_size = order + 1;
-    info!("Encoding with Order: {} (BlockSize: {})", order, block_size);
+    info!(
+        "Encoding with Order: {} (Symbol size: {})",
+        order, block_size
+    );
 
     let raw_data = fs::read(input_filepath).expect("cannot read input file");
     let original_len = raw_data.len() as u64;
 
-    let chunks: Vec<Symbol> = raw_data
-        .chunks(block_size)
-        .map(|chunk| {
-            let mut c = chunk.to_vec();
-            while c.len() < block_size {
-                c.push(0);
-            }
-            c
-        })
-        .collect();
-
+    let mut context = vec![0u8; order];
     let mut freq = FreqTable::new();
-    for block in &chunks {
-        *freq.entry(block.clone()).or_insert(0) += 1;
+
+    for &byte in &raw_data {
+        let mut sym = context.clone();
+        sym.push(byte);
+        *freq.entry(sym).or_insert(0) += 1;
+
+        if order > 0 {
+            context.remove(0);
+            context.push(byte);
+        }
     }
 
     let tree = build_huffman_tree(&freq).expect("could not build huffman tree");
-
     let mut table = CodeTable::new();
     build_code_table(&tree, String::new(), &mut table);
 
     let encoded_freq = encode_frequencies(&freq, block_size as u8, original_len);
-    let encoded_data = encode_data(&chunks, &table);
+
+    let encoded_data = encode_data(&raw_data, &table, order);
 
     let mut file = File::create(output_filepath).expect("cannot create output file");
     file.write_all(&encoded_freq).unwrap();
@@ -135,7 +144,7 @@ fn main() {
         "\r\n✅ Encoding successful.\n\
          📂  Input:       {} ({} bytes)\n\
          💾  Output:      {} ({} bytes)\n\
-         ⚙️  Order:       {} (Block size: {})\n\
+         ⚙️  Order:       {} (Symbol size: {})\n\
          ℹ️  Entropy:     {:.4} bits/symbol\n\
          🗜️  Ratio:       {:.4}%",
         input_filepath,

@@ -1,38 +1,30 @@
 mod huffman;
 
-use std::collections::BinaryHeap;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
-use std::time::Instant;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 use crate::huffman::{
-    build_code_table, build_huffman_tree, entropy_from_freq, CodeTable, FreqTable, Node, Symbol,
+    CodeTable, FreqTable, Symbol, build_code_table, build_huffman_tree, entropy_from_freq,
 };
 
 fn encode_frequencies(frequencies: &FreqTable, block_size: u8, original_len: u64) -> Vec<u8> {
     debug!("Generating frequency header with weights...");
     let mut bytes = Vec::new();
 
-    // 1. Oryginalna długość (8B)
     bytes.extend_from_slice(&original_len.to_be_bytes());
-    // 2. Rozmiar bloku (1B)
     bytes.push(block_size);
 
-    // Sortujemy dla porządku w pliku (nie jest to stricte wymagane dla logiki, ale pomaga w debugowaniu)
     let mut sorted_freq: Vec<(&Symbol, &u64)> = frequencies.iter().collect();
-    // Sortujemy malejąco po wadze
     sorted_freq.sort_by(|a, b| b.1.cmp(a.1));
 
     let unique_symbols = sorted_freq.len();
     debug!("Unique symbols to encode: {}", unique_symbols);
 
-    // 3. Liczba wpisów w tabeli (4B)
     bytes.extend_from_slice(&(unique_symbols as u32).to_be_bytes());
 
-    // 4. Pary: [Symbol (block_size bytes)] + [Freq (8 bytes)]
     for (symbol, freq) in sorted_freq {
         bytes.extend_from_slice(symbol);
         bytes.extend_from_slice(&freq.to_be_bytes());
@@ -52,11 +44,13 @@ fn encode_data(data_blocks: &[Vec<u8>], code_table: &CodeTable) -> Vec<u8> {
                 bits.push(if c == '1' { 1 } else { 0 });
             }
         } else {
-            error!("CRITICAL: Symbol {:?} found in data but not in code table!", block);
+            error!(
+                "CRITICAL: Symbol {:?} found in data but not in code table!",
+                block
+            );
         }
     }
 
-    // Padding
     while bits.len() % 8 != 0 {
         bits.push(0);
     }
@@ -101,12 +95,13 @@ fn main() {
     let raw_data = fs::read(input_filepath).expect("cannot read input file");
     let original_len = raw_data.len() as u64;
 
-    // Blocking logic
-    let mut chunks: Vec<Symbol> = raw_data
+    let chunks: Vec<Symbol> = raw_data
         .chunks(block_size)
         .map(|chunk| {
             let mut c = chunk.to_vec();
-            while c.len() < block_size { c.push(0); }
+            while c.len() < block_size {
+                c.push(0);
+            }
             c
         })
         .collect();
@@ -116,13 +111,11 @@ fn main() {
         *freq.entry(block.clone()).or_insert(0) += 1;
     }
 
-    // Budowa drzewa (teraz z prawdziwymi wagami!)
     let tree = build_huffman_tree(&freq).expect("could not build huffman tree");
-    
+
     let mut table = CodeTable::new();
     build_code_table(&tree, String::new(), &mut table);
 
-    // Zapis nagłówka z wagami
     let encoded_freq = encode_frequencies(&freq, block_size as u8, original_len);
     let encoded_data = encode_data(&chunks, &table);
 
@@ -130,7 +123,7 @@ fn main() {
     file.write_all(&encoded_freq).unwrap();
     file.write_all(&encoded_data).unwrap();
 
- let total_output_size = encoded_freq.len() + encoded_data.len();
+    let total_output_size = encoded_freq.len() + encoded_data.len();
     let file_entropy = entropy_from_freq(&freq);
     let compression_ratio = if original_len > 0 {
         100.0 * (1.0 - (total_output_size as f64) / (original_len as f64))

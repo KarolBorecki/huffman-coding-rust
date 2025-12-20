@@ -3,11 +3,10 @@ mod huffman;
 use crate::huffman::{
     build_code_table, build_huffman_tree, CodeTable, FreqTable,
 };
-use log::{debug, error, info};
+use log::{debug, error};
 use std::collections::HashMap;
 use std::env;
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs::{self};
 
 struct HeaderInfo {
     original_len: u64,
@@ -34,7 +33,6 @@ fn read_and_parse_header(content: &[u8]) -> std::io::Result<HeaderInfo> {
 
     debug!("Header: Entries={}, BlockSize={}", table_entries, block_size);
 
-    // Każdy wpis to (block_size) bajtów symbolu + 8 bajtów wagi
     let entry_size = block_size + 8;
     let header_table_size = table_entries * entry_size;
     let symbols_start = 13;
@@ -102,14 +100,12 @@ fn main() {
     let content = fs::read(input_filepath).expect("Read failed");
     let header = read_and_parse_header(&content).expect("Header parse failed");
 
-    // Budowa drzewa na podstawie prawdziwych wag odczytanych z pliku
     let tree = build_huffman_tree(&header.freq_table).expect("Tree build failed");
     let mut table = HashMap::new();
     build_code_table(&tree, String::new(), &mut table);
 
     let mut decoded = decode_data(&content[header.data_start_offset..], &table);
     
-    // Usunięcie paddingu
     if decoded.len() as u64 > header.original_len {
         decoded.truncate(header.original_len as usize);
     }
@@ -117,8 +113,9 @@ fn main() {
     fs::write(output_filepath, &decoded).expect("Write failed");
         println!(
         "\r\n✅ Decoding successful.\n\
-         📂 Input:  {}\n\
-         💾 Output: {} ({} bytes restored)",
-        input_filepath, output_filepath, decoded.len()
+         📂  Input:       {}\n\
+         💾  Output:      {} ({} bytes restored)\n\
+         ⚙️  Block size:  {}\n",
+        input_filepath, output_filepath, decoded.len(), header.block_size
     );
 }

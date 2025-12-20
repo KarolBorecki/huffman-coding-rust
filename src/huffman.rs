@@ -2,13 +2,15 @@ use log::{debug, trace};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
-pub type CodeTable = HashMap<u8, String>;
-pub type FreqTable = HashMap<u8, u64>;
+// ZMIANA: Symbol to teraz wektor bajtów, a nie pojedynczy u8
+pub type Symbol = Vec<u8>;
+pub type CodeTable = HashMap<Symbol, String>;
+pub type FreqTable = HashMap<Symbol, u64>;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Node {
     Leaf {
-        byte: u8,
+        symbol: Symbol, // ZMIANA: byte -> symbol (Vec<u8>)
         freq: u64,
     },
     Internal {
@@ -35,7 +37,8 @@ impl Ord for Node {
         }
 
         match (self, other) {
-            (Node::Leaf { byte: a, .. }, Node::Leaf { byte: b, .. }) => a.cmp(b),
+            // Porównywanie wektorów (leksykograficzne) jest wbudowane w Rust
+            (Node::Leaf { symbol: a, .. }, Node::Leaf { symbol: b, .. }) => a.cmp(b),
             (Node::Leaf { .. }, Node::Internal { .. }) => Ordering::Less,
             (Node::Internal { .. }, Node::Leaf { .. }) => Ordering::Greater,
             (Node::Internal { .. }, Node::Internal { .. }) => Ordering::Equal,
@@ -59,7 +62,6 @@ pub struct HeapNode {
 
 impl Ord for HeapNode {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse ordering for Min-Heap behavior in BinaryHeap (which is max-heap by default)
         other.freq.cmp(&self.freq)
     }
 }
@@ -71,7 +73,6 @@ impl PartialOrd for HeapNode {
 }
 
 pub fn entropy_from_freq(freq: &FreqTable) -> f64 {
-    #![allow(dead_code)]
     let total: u64 = freq.values().sum();
     let total_f = total as f64;
 
@@ -102,12 +103,15 @@ pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
 
     let mut heap = BinaryHeap::new();
 
-    for (i, (byte, _freq)) in freq_vec.iter().enumerate() {
+    for (i, (symbol, _freq)) in freq_vec.iter().enumerate() {
         let freq = (i + 1) as u64;
 
         heap.push(HeapNode {
             freq,
-            node: Box::new(Node::Leaf { byte: **byte, freq }),
+            node: Box::new(Node::Leaf {
+                symbol: symbol.to_vec(),
+                freq,
+            }),
         });
     }
     trace!("Initial heap size: {}", heap.len());
@@ -134,14 +138,9 @@ pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
 
 pub fn build_code_table(node: &Node, prefix: String, table: &mut CodeTable) {
     match node {
-        Node::Leaf { byte, .. } => {
-            trace!(
-                "Assigning code to byte {:#04x} ('{}') : '{}'",
-                byte,
-                (*byte) as char,
-                prefix
-            );
-            table.insert(*byte, prefix);
+        Node::Leaf { symbol, .. } => {
+            trace!("Assigning code to symbol {:?} : '{}'", symbol, prefix);
+            table.insert(symbol.clone(), prefix);
         }
         Node::Internal { left, right, .. } => {
             build_code_table(left, format!("{}0", prefix), table);

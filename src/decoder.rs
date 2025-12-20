@@ -1,7 +1,7 @@
 mod huffman;
 
 use crate::huffman::{
-    CodeTable, FreqTable, build_code_table, build_huffman_tree, entropy_from_freq,
+    build_code_table, build_huffman_tree, entropy_from_freq, CodeTable, FreqTable,
 };
 use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
@@ -10,117 +10,100 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::time::Instant;
 
-fn read_frequencies_and_data_from_file(filepath: &str) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
-    info!("Reading encoded file: {}", filepath);
-    let content = fs::read(filepath)?;
-
-    if content.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "file is empty",
-        ));
-    }
-
-    let freq_size = content[0] as usize + 2;
-
-    debug!("Total file size: {} bytes", content.len());
-    debug!("Header size (frequency table): {} bytes", freq_size);
-
-    if freq_size > content.len() {
-        error!("CRITICAL: Header size exceeds file content length!");
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "header size exceeds file content",
-        ));
-    }
-
-    let freq_encoded = content[..freq_size].to_vec();
-    let data_encoded = content[freq_size..].to_vec();
-
-    debug!("Encoded data body size: {} bytes", data_encoded.len());
-
-    Ok((freq_encoded, data_encoded))
+struct HeaderInfo {
+    original_len: u64,
+    block_size: usize,
+    freq_table: FreqTable,
+    data_start_offset: usize,
 }
 
-fn decode_frequencies(encoded: &[u8]) -> FreqTable {
-    debug!("Decoding frequency table...");
+fn read_and_parse_header(content: &[u8]) -> std::io::Result<HeaderInfo> {
+    // Struktura nagłówka:
+    // [0..8]   Original Length (u64)
+    // [8]      Block Size (u8)
+    // [9..13]  Table Entries Count (u32)
+    // [13..]   Symbols (Count * Block Size)
+    
+    if content.len() < 13 {
+        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "File too short for header"));
+    }
+
+    let mut buf8 = [0u8; 8];
+    buf8.copy_from_slice(&content[0..8]);
+    let original_len = u64::from_be_bytes(buf8);
+
+    let block_size = content[8] as usize;
+    if block_size == 0 {
+         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Block size is zero"));
+    }
+
+    let mut buf4 = [0u8; 4];
+    buf4.copy_from_slice(&content[9..13]);
+    let table_entries = u32::from_be_bytes(buf4) as usize;
+
+    debug!("Header Info: OrigLen={}, BlockSize={}, TableEntries={}", original_len, block_size, table_entries);
+
+    let symbols_start = 13;
+    let symbols_end = symbols_start + (table_entries * block_size);
+
+    if symbols_end > content.len() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header says table is larger than file"));
+    }
+
     let mut freq = HashMap::new();
-    let count = (encoded[0] as usize) + 1; // +1 because 0 represents 1 symbol
+    let symbols_slice = &content[symbols_start..symbols_end];
 
-    debug!("Frequency entries to process: {}", count);
-
-    for i in 1..count + 1 {
-        if i >= encoded.len() {
-            warn!("Frequency table truncated unexpectedly at index {}", i);
-            break;
-        }
-        let byte = encoded[i];
-
-        freq.insert(byte, i as u64);
-
-        trace!(
-            "Decoded frequency entry: byte {:#04x} ('{}') with assigned weight {}",
-            byte, byte as char, i
-        );
+    // Rekonstrukcja wag (sztuczna, zgodna z encoderem: 1..N)
+    for (i, chunk) in symbols_slice.chunks(block_size).enumerate() {
+        let symbol = chunk.to_vec();
+        freq.insert(symbol, (i + 1) as u64);
     }
 
-    debug!(
-        "Reconstructed frequency map with {} unique symbols.",
-        freq.len()
-    );
-    freq
+    Ok(HeaderInfo {
+        original_len,
+        block_size,
+        freq_table: freq,
+        data_start_offset: symbols_end,
+    })
 }
 
-fn decode_data(encoded: &[u8], code_table: &CodeTable) -> Vec<u8> {
+fn decode_data(encoded: &[u8], code_table: &CodeTable, block_size: usize) -> Vec<u8> {
     debug!("Starting bitstream decoding...");
     let start_time = Instant::now();
 
-    let mut bits = Vec::new();
-    bits.reserve(encoded.len() * 8);
-
+    // Konwersja bajtów na bity
+    let mut bits = Vec::with_capacity(encoded.len() * 8);
     for &byte in encoded {
         for i in (0..8).rev() {
             bits.push((byte >> i) & 1);
         }
     }
 
-    trace!("Expanded {} bytes into {} bits.", encoded.len(), bits.len());
-
-    let mut result = Vec::new();
+    let mut result_bytes = Vec::new();
     let mut current_code = String::new();
 
-    let reverse_table: HashMap<String, u8> =
-        code_table.iter().map(|(&b, c)| (c.clone(), b)).collect();
-
-    debug!(
-        "Reverse lookup table created. Entries: {}",
-        reverse_table.len()
-    );
+    // Odwrócona tabela: Code String -> Symbol (Vec<u8>)
+    let reverse_table: HashMap<String, Vec<u8>> =
+        code_table.iter().map(|(sym, code)| (code.clone(), sym.clone())).collect();
 
     for &bit in &bits {
         current_code.push(if bit == 1 { '1' } else { '0' });
-        if let Some(&byte) = reverse_table.get(&current_code) {
-            result.push(byte);
+        if let Some(symbol) = reverse_table.get(&current_code) {
+            result_bytes.extend_from_slice(symbol);
             current_code.clear();
         }
     }
 
-    let duration = start_time.elapsed();
-    debug!("Bitstream decoding finished in {:.2?}.", duration);
-    debug!("Final decoded data size: {} bytes.", result.len());
-
-    result
+    debug!("Decoding loop finished in {:.2?}. Raw decoded size: {}", start_time.elapsed(), result_bytes.len());
+    result_bytes
 }
 
 fn main() {
     env_logger::init();
 
     let args: Vec<String> = env::args().collect();
-
     if args.len() < 3 {
         error!("Usage: {} <input_file> <output_file>", args[0]);
-        eprintln!("  📂 <input_file>:  path to the encoded file.");
-        eprintln!("  💾 <output_file>: path to write the decoded output.");
         std::process::exit(1);
     }
 
@@ -128,61 +111,36 @@ fn main() {
     let output_filepath = &args[2];
 
     info!("--- Start Decoding ---");
+    let content = fs::read(input_filepath).expect("Failed to read input file");
 
-    let (encoded_freq, encoded_data) = match read_frequencies_and_data_from_file(input_filepath) {
-        Ok(res) => res,
+    let header_info = match read_and_parse_header(&content) {
+        Ok(h) => h,
         Err(e) => {
-            error!("Failed to read encoded file: {}", e);
+            error!("Header parse error: {}", e);
             std::process::exit(1);
         }
     };
 
-    let decoded_freq = decode_frequencies(&encoded_freq);
+    let tree = build_huffman_tree(&header_info.freq_table).expect("Empty tree");
+    let mut code_table = HashMap::new();
+    build_code_table(&tree, String::new(), &mut code_table);
 
-    debug!("Building Huffman Tree...");
-    let decoded_tree = match build_huffman_tree(&decoded_freq) {
-        Some(t) => t,
-        None => {
-            error!("Could not build Huffman tree (frequency table might be empty).");
-            std::process::exit(1);
-        }
-    };
+    let data_slice = &content[header_info.data_start_offset..];
+    let mut decoded_raw = decode_data(data_slice, &code_table, header_info.block_size);
 
-    let mut decoded_table = HashMap::new();
-    build_code_table(&decoded_tree, String::new(), &mut decoded_table);
-    debug!("Code table built.");
-
-    let decoded_data = decode_data(&encoded_data, &decoded_table);
-
-    info!("Writing decoded output to file: {}", output_filepath);
-    let mut decoded_output_file =
-        File::create(output_filepath).expect("cannot create decoded_output file");
-
-    if let Err(e) = decoded_output_file.write_all(&decoded_data) {
-        error!("Could not write decoded data: {}", e);
-        std::process::exit(1);
+    // Przycinanie paddingu
+    if decoded_raw.len() as u64 > header_info.original_len {
+        debug!("Trimming padding: {} -> {}", decoded_raw.len(), header_info.original_len);
+        decoded_raw.truncate(header_info.original_len as usize);
     }
 
-    info!("Write successful.");
-
-    let input_size = fs::metadata(input_filepath).map(|m| m.len()).unwrap_or(0);
-    let output_size = fs::metadata(output_filepath).map(|m| m.len()).unwrap_or(0);
-    let file_entropy = entropy_from_freq(&decoded_freq);
-
-    let ratio = if input_size > 0 {
-        100.0 * (1.0 - (input_size as f64) / (output_size as f64))
-    } else {
-        0.0
-    };
+    let mut out_file = File::create(output_filepath).expect("Cannot create output file");
+    out_file.write_all(&decoded_raw).expect("Write failed");
 
     println!(
-        "\r\n✅ decoding successful.\n\
-         📂 input file:        {} ({} bytes)\n\
-         💾 output file:       {} ({} bytes)\n\
-         ℹ️ entropy:           {:.2} bits/symbol\n\
-         🗜️ compression ratio: {:.2}% (relative to encoded input)",
-        input_filepath, input_size, output_filepath, output_size, file_entropy, ratio
+        "\r\n✅ Decoding successful.\n\
+         📂 Input:  {}\n\
+         💾 Output: {} ({} bytes restored)",
+        input_filepath, output_filepath, decoded_raw.len()
     );
-
-    info!("--- End ---");
 }

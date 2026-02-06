@@ -1,4 +1,3 @@
-use log::debug;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
@@ -28,6 +27,7 @@ impl Node {
     }
 }
 
+// Implementacja Ord dla Node zapewnia determinizm przy porównywaniu węzłów o tej samej wadze
 impl Ord for Node {
     fn cmp(&self, other: &Self) -> Ordering {
         let freq_cmp = other.freq().cmp(&self.freq());
@@ -36,9 +36,12 @@ impl Ord for Node {
         }
 
         match (self, other) {
+            // Przy równych wagach, sortujemy leksykograficznie po symbolu
             (Node::Leaf { symbol: a, .. }, Node::Leaf { symbol: b, .. }) => a.cmp(b),
+            // Liście mają pierwszeństwo przed węzłami wewnętrznymi (konwencja dla determinizmu)
             (Node::Leaf { .. }, Node::Internal { .. }) => Ordering::Less,
             (Node::Internal { .. }, Node::Leaf { .. }) => Ordering::Greater,
+            // Dwa węzły wewnętrzne o tej samej wadze są "równe"
             (Node::Internal { .. }, Node::Internal { .. }) => Ordering::Equal,
         }
     }
@@ -58,9 +61,14 @@ pub struct HeapNode {
     node: Box<Node>,
 }
 
+// KLUCZOWA POPRAWKA: Determinizm sterty
 impl Ord for HeapNode {
     fn cmp(&self, other: &Self) -> Ordering {
+        // BinaryHeap to MaxHeap, więc odwracamy kolejność częstotliwości (najmniejsze najpierw)
         other.freq.cmp(&self.freq)
+            // JEŚLI CZĘSTOTLIWOŚCI SĄ RÓWNE: używamy porównania Node (leksykograficznie),
+            // aby enkoder i dekoder zawsze podejmowały tę samą decyzję co do kolejności łączenia.
+            .then_with(|| other.node.cmp(&self.node))
     }
 }
 
@@ -72,50 +80,24 @@ impl PartialOrd for HeapNode {
 
 pub fn entropy_from_freq(freq: &FreqTable) -> f64 {
     let total: u64 = freq.values().sum();
+    if total == 0 { return 0.0; }
     let total_f = total as f64;
 
-    let entropy: f64 = freq
-        .values()
+    freq.values()
         .map(|&count| {
+            if count == 0 { return 0.0; }
             let p = count as f64 / total_f;
             -p * p.log2()
         })
-        .sum();
-    entropy
+        .sum()
 }
 
 pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
-    debug!("Building Huffman Tree from {} unique symbols", frequencies.len());
-
-    let mut freq_vec: Vec<(&Symbol, u64)> = frequencies
-        .iter()
-        .map(|(sym, freq)| (sym, *freq))
-        .collect();
-
-    let limit = u64::MAX / 2;
-    let mut total_weight: u128 = freq_vec.iter().map(|(_, f)| *f as u128).sum();
-
-    if total_weight > limit as u128 {
-        debug!(
-            "⚠️ Total weight ({}) exceeds safety limit. Normalizing weights...",
-            total_weight
-        );
-
-        while total_weight > limit as u128 {
-            total_weight = 0;
-            for (_, freq) in freq_vec.iter_mut() {
-                *freq = (*freq >> 1).max(1);
-                total_weight += *freq as u128;
-            }
-        }
-        debug!("Weights normalized. New total: {}", total_weight);
-    }
-
-    freq_vec.sort_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)));
+    if frequencies.is_empty() { return None; }
 
     let mut heap = BinaryHeap::new();
 
-    for (_i, (symbol, freq)) in freq_vec.iter().enumerate() {
+    for (symbol, freq) in frequencies {
         heap.push(HeapNode {
             freq: *freq,
             node: Box::new(Node::Leaf {
@@ -125,31 +107,42 @@ pub fn build_huffman_tree(frequencies: &FreqTable) -> Option<Box<HuffmanTree>> {
         });
     }
 
+    // POPRAWKA: Jeśli jest tylko jeden symbol, tworzymy sztuczny węzeł.
+    // Używamy pustego wektora vec![], aby nie kolidował z prawdziwym symbolem [0] (null byte).
+    if heap.len() == 1 {
+        let only_node = heap.pop().unwrap();
+        return Some(Box::new(Node::Internal {
+            freq: only_node.freq,
+            left: only_node.node,
+            right: Box::new(Node::Leaf { symbol: vec![], freq: 0 }), 
+        }));
+    }
+
     while heap.len() > 1 {
         let left = heap.pop().unwrap();
         let right = heap.pop().unwrap();
-
         let freq = left.freq + right.freq;
-        
-        let new_node = Node::Internal {
-            freq,
-            left: left.node,
-            right: right.node,
-        };
         heap.push(HeapNode {
             freq,
-            node: Box::new(new_node),
+            node: Box::new(Node::Internal {
+                freq,
+                left: left.node,
+                right: right.node,
+            }),
         });
     }
 
-    debug!("Tree construction complete.");
     heap.pop().map(|n| n.node)
 }
 
 pub fn build_code_table(node: &Node, prefix: String, table: &mut CodeTable) {
     match node {
-        Node::Leaf { symbol, .. } => {
-            table.insert(symbol.clone(), prefix);
+        Node::Leaf { symbol, freq } => {
+            // Ignorujemy dummy node (freq 0), żeby nie śmiecić w tabeli kodów
+            // oraz puste wektory
+            if *freq > 0 || !symbol.is_empty() {
+                table.insert(symbol.clone(), prefix);
+            }
         }
         Node::Internal { left, right, .. } => {
             build_code_table(left, format!("{}0", prefix), table);

@@ -3,61 +3,63 @@ mod huffman;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
+use std::collections::HashMap;
 
-use log::{debug, error, info};
+// Jeśli używasz log, upewnij się, że są w Cargo.toml, w przeciwnym razie usuń te linie
+// use log::{debug, error, info}; 
+// Dla uproszczenia w tym przykładzie użyję println!
 
 use crate::huffman::{
-    CodeTable, FreqTable, Symbol, build_code_table, build_huffman_tree, entropy_from_freq,
+    CodeTable, FreqTable, build_code_table, build_huffman_tree, entropy_from_freq,
 };
 
-fn encode_frequencies(frequencies: &FreqTable, block_size: u8, original_len: u64) -> Vec<u8> {
-    debug!("Generating frequency header with weights...");
+type MarkovFreqTable = HashMap<Vec<u8>, FreqTable>;
+type MarkovCodeTable = HashMap<Vec<u8>, CodeTable>;
+
+fn encode_frequencies(m_frequencies: &MarkovFreqTable, order: u8, original_len: u64) -> Vec<u8> {
     let mut bytes = Vec::new();
 
     bytes.extend_from_slice(&original_len.to_be_bytes());
-    bytes.push(block_size);
+    bytes.push(order);
+    bytes.extend_from_slice(&(m_frequencies.len() as u32).to_be_bytes());
 
-    let mut sorted_freq: Vec<(&Symbol, &u64)> = frequencies.iter().collect();
-    sorted_freq.sort_by(|a, b| b.1.cmp(a.1));
+    for (context, f_table) in m_frequencies {
+        bytes.extend_from_slice(context);
+        bytes.extend_from_slice(&(f_table.len() as u32).to_be_bytes());
 
-    let unique_symbols = sorted_freq.len();
-    debug!("Unique symbols to encode: {}", unique_symbols);
-
-    bytes.extend_from_slice(&(unique_symbols as u32).to_be_bytes());
-
-    for (symbol, freq) in sorted_freq {
-        bytes.extend_from_slice(symbol);
-        bytes.extend_from_slice(&freq.to_be_bytes());
+        for (symbol, freq) in f_table {
+            bytes.push(symbol[0]);
+            bytes.extend_from_slice(&freq.to_be_bytes());
+        }
     }
-
-    debug!("Header generated. Total header size: {} bytes", bytes.len());
     bytes
 }
 
-fn encode_data(raw_data: &[u8], code_table: &CodeTable, order: usize) -> Vec<u8> {
-    debug!("Starting context-aware data encoding...");
+fn encode_data(raw_data: &[u8], m_code_table: &MarkovCodeTable, order: usize) -> Vec<u8> {
     let mut result = Vec::new();
     let mut current_byte = 0u8;
     let mut bit_count = 0;
-
     let mut context = vec![0u8; order];
 
     for &byte in raw_data {
-        let mut symbol = context.clone();
-        symbol.push(byte);
+        let codes = m_code_table.get(&context)
+            .expect("Błąd krytyczny: Kontekst nie znaleziony (nie powinno się zdarzyć)");
+        
+        let symbol_to_encode = vec![byte];
+        
+        // Tutaj symbol musi istnieć, bo budowaliśmy drzewo na podstawie tych danych
+        let code = codes.get(&symbol_to_encode)
+            .expect("Błąd krytyczny: Symbol nie ma kodu");
 
-        if let Some(code) = code_table.get(&symbol) {
-            for bit_char in code.chars() {
-                let bit = if bit_char == '1' { 1 } else { 0 };
+        for bit_char in code.chars() {
+            let bit = if bit_char == '1' { 1 } else { 0 };
+            current_byte = (current_byte << 1) | bit;
+            bit_count += 1;
 
-                current_byte = (current_byte << 1) | bit;
-                bit_count += 1;
-
-                if bit_count == 8 {
-                    result.push(current_byte);
-                    current_byte = 0;
-                    bit_count = 0;
-                }
+            if bit_count == 8 {
+                result.push(current_byte);
+                current_byte = 0;
+                bit_count = 0;
             }
         }
 
@@ -67,24 +69,23 @@ fn encode_data(raw_data: &[u8], code_table: &CodeTable, order: usize) -> Vec<u8>
         }
     }
 
+    // Dopełnienie zerami do pełnego bajtu
     if bit_count > 0 {
-        current_byte <<= 8 - bit_count;
-        result.push(current_byte);
+        result.push(current_byte << (8 - bit_count));
     }
 
     result
 }
-fn main() {
-    env_logger::init();
 
+fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        error!("Usage: {} <input_file> [output_file] [--order=N]", args[0]);
+        println!("Użycie: {} <input> [output] [--order=N]", args[0]);
         std::process::exit(1);
     }
 
     let input_filepath = &args[1];
-    let mut output_filepath = "output.huff";
+    let mut output_filepath = "output.huff".to_string();
     let mut order = 0usize;
 
     for arg in &args[2..] {
@@ -93,26 +94,31 @@ fn main() {
                 order = n;
             }
         } else {
-            output_filepath = arg;
+            output_filepath = arg.clone();
         }
     }
 
-    let block_size = order + 1;
-    info!(
-        "Encoding with Order: {} (Symbol size: {})",
-        order, block_size
-    );
+    // Ograniczenie rzędu, żeby nie przepełnić bufora w nagłówku (format zakłada 1 bajt na rząd)
+    if order > 255 {
+        println!("Ostrzeżenie: Maksymalny rząd to 255. Ustawiono na 255.");
+        order = 255;
+    }
 
-    let raw_data = fs::read(input_filepath).expect("cannot read input file");
+    let raw_data = fs::read(input_filepath).expect("Błąd odczytu pliku");
     let original_len = raw_data.len() as u64;
 
+    if original_len == 0 {
+        println!("Plik jest pusty.");
+        return;
+    }
+
+    // 1. Zbieranie statystyk
+    let mut markov_freqs = MarkovFreqTable::new();
     let mut context = vec![0u8; order];
-    let mut freq = FreqTable::new();
 
     for &byte in &raw_data {
-        let mut sym = context.clone();
-        sym.push(byte);
-        *freq.entry(sym).or_insert(0) += 1;
+        let f_table = markov_freqs.entry(context.clone()).or_insert_with(FreqTable::new);
+        *f_table.entry(vec![byte]).or_insert(0) += 1;
 
         if order > 0 {
             context.remove(0);
@@ -120,40 +126,42 @@ fn main() {
         }
     }
 
-    let tree = build_huffman_tree(&freq).expect("could not build huffman tree");
-    let mut table = CodeTable::new();
-    build_code_table(&tree, String::new(), &mut table);
+    // 2. Budowa drzew Huffmana
+    let mut markov_codes = MarkovCodeTable::new();
+    let mut weighted_entropy = 0.0;
+    
+    for (ctx, f_table) in &markov_freqs {
+        let tree = build_huffman_tree(f_table).expect("Błąd budowy drzewa");
+        let mut codes = CodeTable::new();
+        build_code_table(&tree, String::new(), &mut codes);
+        
+        let ctx_count: u64 = f_table.values().sum();
+        let prob_ctx = ctx_count as f64 / original_len as f64;
+        weighted_entropy += prob_ctx * entropy_from_freq(f_table);
+        
+        markov_codes.insert(ctx.clone(), codes);
+    }
 
-    let encoded_freq = encode_frequencies(&freq, block_size as u8, original_len);
+    // 3. Kodowanie
+    let encoded_header = encode_frequencies(&markov_freqs, order as u8, original_len);
+    let encoded_data = encode_data(&raw_data, &markov_codes, order);
 
-    let encoded_data = encode_data(&raw_data, &table, order);
-
-    let mut file = File::create(output_filepath).expect("cannot create output file");
-    file.write_all(&encoded_freq).unwrap();
+    // 4. Zapis
+    let mut file = File::create(&output_filepath).expect("Błąd zapisu");
+    file.write_all(&encoded_header).unwrap();
     file.write_all(&encoded_data).unwrap();
 
-    let total_output_size = encoded_freq.len() + encoded_data.len();
-    let file_entropy = entropy_from_freq(&freq);
-    let compression_ratio = if original_len > 0 {
-        100.0 * (1.0 - (total_output_size as f64) / (original_len as f64))
-    } else {
-        0.0
-    };
-
+    let total_size = encoded_header.len() + encoded_data.len();
     println!(
-        "\r\n✅ Encoding successful.\n\
-         📂  Input:       {} ({} bytes)\n\
-         💾  Output:      {} ({} bytes)\n\
-         ⚙️  Order:       {} (Symbol size: {})\n\
-         ℹ️  Entropy:     {:.4} bits/symbol\n\
-         🗜️  Ratio:       {:.4}%",
-        input_filepath,
-        original_len,
-        output_filepath,
-        total_output_size,
-        order,
-        block_size,
-        file_entropy,
-        compression_ratio
+        "\r\n✅ Kodowanie rzędu {} zakończone.\n\
+         📂 Rozmiar nagłówka:  {} bajtów\n\
+         💾 Rozmiar strumienia: {} bajtów\n\
+         📊 Entropia H(X|C):   {:.4} bitów/symbol\n\
+         🗜️  Kompresja:        {:.2}%",
+        order, 
+        encoded_header.len(), 
+        encoded_data.len(), 
+        weighted_entropy,
+        100.0 * (1.0 - (total_size as f64 / original_len as f64))
     );
 }
